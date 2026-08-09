@@ -1,0 +1,11 @@
+runpod>=1.6.0
+torch==2.4.0
+diffusers>=0.32.0
+transformers>=4.44.0
+accelerate>=0.34.0
+sentencepiece
+imageio[ffmpeg]>=2.34.0
+imageio-ffmpeg
+numpy
+pillow
+boto3
