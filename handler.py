@@ -59,6 +59,14 @@ def _load_pipes():
         else:
             _PIPE.enable_model_cpu_offload()
             print(f"[ltx] CPU-offload mode (only {free_gb:.0f}GB free)", flush=True)
+        # VAE tiling/slicing keeps the decode step from spiking VRAM at 720p+ (the
+        # usual OOM point on a 24GB card). Cheap safety with negligible quality cost.
+        try:
+            _PIPE.vae.enable_tiling()
+            _PIPE.vae.enable_slicing()
+            print("[ltx] VAE tiling+slicing on (safe for 720p on 24GB)", flush=True)
+        except Exception as _e:
+            print(f"[ltx] VAE tiling unavailable: {_e}", flush=True)
     else:
         _PIPE.to("cpu")
 
@@ -117,11 +125,20 @@ def handler(event):
     image_in = inp.get("image")
     seconds = int(inp.get("seconds") or 4)
     seconds = max(2, min(10, seconds))
-    fps = int(inp.get("fps") or 8)
+    # Default fps 24 (cinematic/smooth). 8fps looked like a stutter-y slideshow; LTX
+    # is trained on real motion so it wants 24-30. Overridable per-request + by env.
+    fps = int(inp.get("fps") or os.environ.get("LTX_FPS", "24"))
     fps = max(6, min(30, fps))
 
     if not prompt and not image_in:
         return {"error": "prompt or image required"}
+
+    # Prompt enhancement: LTX rewards long, cinematic, detailed prompts. A bare prompt
+    # ("a dog on a beach") yields flat output. Unless the caller already wrote a long
+    # one (or opts out with enhance:false), append cinematic quality cues.
+    if prompt and inp.get("enhance", True) and len(prompt) < 200:
+        prompt = (f"{prompt}, cinematic, highly detailed, sharp focus, natural lighting, "
+                  f"smooth realistic motion, professional color grading, 4k, high quality")
 
     # LTX generates in frames; num_frames must be 8k+1 for its temporal compression.
     num_frames = seconds * fps
@@ -132,9 +149,13 @@ def handler(event):
     except Exception as e:
         return {"error": f"model load failed: {e}"}
 
-    neg = "worst quality, blurry, jittery, distorted, watermark, text"
-    # LTX-Video is trained at 768x512-ish; keep it modest for speed/VRAM.
-    width, height = 768, 512
+    neg = ("worst quality, low quality, blurry, jittery, distorted, deformed, "
+           "watermark, text, low resolution, pixelated, choppy motion, artifacts")
+    # Quality-tier resolution. LTX-2 handles 1216x704 (720p-class) well on a 24GB card.
+    # Must be multiples of 32. Overridable via env for a cheaper "draft" tier later.
+    # 768x512 = old cheap/ugly default; 1216x704 = the real "standard" quality tier.
+    width = int(os.environ.get("LTX_WIDTH", "1216"))
+    height = int(os.environ.get("LTX_HEIGHT", "704"))
 
     try:
         gen = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -143,7 +164,8 @@ def handler(event):
             negative_prompt=neg,
             width=width, height=height,
             num_frames=num_frames,
-            num_inference_steps=int(os.environ.get("LTX_STEPS", "40")),
+            # 50 steps = sharper than 40 (diminishing returns past ~50).
+            num_inference_steps=int(os.environ.get("LTX_STEPS", "50")),
             generator=gen,
         )
         img = _decode_image(image_in)
