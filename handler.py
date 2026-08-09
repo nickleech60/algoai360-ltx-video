@@ -60,23 +60,18 @@ def _load_pipes():
     print("[ltx] weights loaded, placing on device ...", flush=True)
 
     if have_cuda:
-        free, total = torch.cuda.mem_get_info()
-        free_gb = free / (1024**3)
-        # LTX video generation can spike VRAM. On a 24GB card full-GPU is fine; if a
-        # worker somehow lands on a smaller card, fall back to CPU offload so it NEVER
-        # OOM-hangs (an OOM used to look like a silent stuck worker).
-        if free_gb >= 20:
-            _PIPE.to("cuda")
-            print(f"[ltx] full-GPU mode ({free_gb:.0f}GB free)", flush=True)
-        else:
-            _PIPE.enable_model_cpu_offload()
-            print(f"[ltx] CPU-offload mode (only {free_gb:.0f}GB free)", flush=True)
-        # VAE tiling/slicing keeps the decode step from spiking VRAM at 720p+ (the
-        # usual OOM point on a 24GB card). Cheap safety with negligible quality cost.
+        # The 13B model is ~22GB in bf16 — putting it FULLY on a 24GB card
+        # (_PIPE.to("cuda")) leaves no room for generation → CUDA OOM (learned the
+        # hard way). ALWAYS use CPU offload for the 13B: only the active module sits
+        # on GPU, the rest lives in system RAM. Slower but it FITS 24GB.
+        _PIPE.enable_model_cpu_offload()
+        print("[ltx] CPU-offload mode (13B needs it to fit 24GB)", flush=True)
+        # VAE tiling/slicing keeps the decode step from spiking VRAM (the other OOM
+        # point). Cheap safety, negligible quality cost.
         try:
             _PIPE.vae.enable_tiling()
             _PIPE.vae.enable_slicing()
-            print("[ltx] VAE tiling+slicing on (safe for 720p on 24GB)", flush=True)
+            print("[ltx] VAE tiling+slicing on", flush=True)
         except Exception as _e:
             print(f"[ltx] VAE tiling unavailable: {_e}", flush=True)
     else:
@@ -168,7 +163,9 @@ def handler(event):
     height = int(os.environ.get("LTX_HEIGHT", "704"))
 
     try:
-        gen = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
+        # With CPU offload the generator must live on CPU (the model modules move
+        # on/off GPU as needed; a cuda generator would mismatch the offloaded state).
+        gen = torch.Generator(device="cpu")
         common = dict(
             prompt=prompt or "a high quality cinematic video",
             negative_prompt=neg,
