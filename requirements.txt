@@ -5,9 +5,15 @@ torch==2.5.1
 # Pin diffusers to a version known-compatible with the LTX pipeline + torch 2.5.1.
 # Open-ended >=0.32.0 pulled a build whose LTX import needed a newer torch API.
 diffusers==0.32.2
-transformers>=4.44.0
-accelerate>=0.34.0
+# Pin transformers: diffusers 0.32.2 imports FLAX_WEIGHTS_NAME from transformers.utils,
+# which was REMOVED in transformers 4.46+. 4.44.2 still has it and is compatible.
+transformers==4.44.2
+accelerate==0.34.2
 sentencepiece
+# huggingface_hub must stay compatible with transformers 4.44.2 (newer hub versions
+# drop symbols older transformers imports). 0.24.x is the matching line.
+huggingface_hub==0.24.6
+tokenizers==0.19.1
 imageio[ffmpeg]>=2.34.0
 imageio-ffmpeg
 numpy
