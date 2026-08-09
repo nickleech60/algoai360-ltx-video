@@ -11,10 +11,11 @@ FROM runpod/worker-comfyui:5.8.6-base
 # Add the LTX-Video custom nodes (CheckpointLoaderSimple works for the ckpt, but the
 # LTX-specific nodes — EmptyLTXVLatentVideo, LTXVConditioning, LTXVAddGuide, the "ltxv"
 # CLIP type, VAEDecodeTiled temporal args — come from ComfyUI-LTXVideo).
-# LTX nodes (EmptyLTXVLatentVideo, LTXVConditioning, "ltxv" CLIP, etc.) AND
-# VideoHelperSuite (VHS_VideoCombine) so ComfyUI outputs a finished MP4 directly —
-# Bob assembles frames→mp4 himself locally, but in the cloud we want one mp4 back.
-RUN comfy-node-install comfyui-ltxvideo comfyui-videohelpersuite
+# LTX nodes (EmptyLTXVLatentVideo, LTXVConditioning, "ltxv" CLIP, etc.).
+RUN comfy-node-install comfyui-ltxvideo
+# VideoHelperSuite (VHS_VideoCombine) so ComfyUI outputs a finished MP4 directly.
+# Separate RUN so one failing doesn't skip the other, and so we see which one errors.
+RUN comfy-node-install comfyui-videohelpersuite
 
 # Models are NOT baked — they sit on the network volume at:
 #   /runpod-volume/models/checkpoints/ltxv-13b-0.9.7-dev-fp8.safetensors
