@@ -1,19 +1,16 @@
 runpod>=1.6.0
-# torch 2.5.1 has torch.distributed.tensor.DTensor, which diffusers' LTX pipeline
-# imports. torch 2.4.0 lacks it → "cannot import name 'DTensor'" at model load.
+# PROVEN-WORKING LTX-Video stack (verified against the community reference env):
+#   torch 2.5.1 + transformers 4.47.1 + diffusers 0.33.0 + accelerate 1.2.1.
+# Two earlier failures taught the version rules the hard way:
+#   - torch 2.4.0 lacked torch.distributed.tensor.DTensor → import crash. Need >=2.5.
+#   - pinning diffusers/transformers BACKWARD (0.32.2 / 4.44.2) hit
+#     "cannot import name FLAX_WEIGHTS_NAME" — the LTX pipeline needs the NEWER pair.
+# So we move FORWARD to the known-good combo, not backward.
 torch==2.5.1
-# Pin diffusers to a version known-compatible with the LTX pipeline + torch 2.5.1.
-# Open-ended >=0.32.0 pulled a build whose LTX import needed a newer torch API.
-diffusers==0.32.2
-# Pin transformers: diffusers 0.32.2 imports FLAX_WEIGHTS_NAME from transformers.utils,
-# which was REMOVED in transformers 4.46+. 4.44.2 still has it and is compatible.
-transformers==4.44.2
-accelerate==0.34.2
+transformers==4.47.1
+diffusers==0.33.0
+accelerate==1.2.1
 sentencepiece
-# huggingface_hub must stay compatible with transformers 4.44.2 (newer hub versions
-# drop symbols older transformers imports). 0.24.x is the matching line.
-huggingface_hub==0.24.6
-tokenizers==0.19.1
 imageio[ffmpeg]>=2.34.0
 imageio-ffmpeg
 numpy
