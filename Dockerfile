@@ -1,5 +1,5 @@
 # AlgoAI360 — LTX-Video serverless worker
-# Base: CUDA 12.1 runtime on Ubuntu 22.04 (matches torch 2.4 cu121 wheels).
+# Base: CUDA 12.1 runtime on Ubuntu 22.04 (matches torch 2.5.1 cu121 wheels).
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 # HF_HOME points at the RunPod volume/host-cache path so a downloaded model persists

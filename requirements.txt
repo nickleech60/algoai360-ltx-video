@@ -1,6 +1,10 @@
 runpod>=1.6.0
-torch==2.4.0
-diffusers>=0.32.0
+# torch 2.5.1 has torch.distributed.tensor.DTensor, which diffusers' LTX pipeline
+# imports. torch 2.4.0 lacks it → "cannot import name 'DTensor'" at model load.
+torch==2.5.1
+# Pin diffusers to a version known-compatible with the LTX pipeline + torch 2.5.1.
+# Open-ended >=0.32.0 pulled a build whose LTX import needed a newer torch API.
+diffusers==0.32.2
 transformers>=4.44.0
 accelerate>=0.34.0
 sentencepiece
