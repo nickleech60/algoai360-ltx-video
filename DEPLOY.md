@@ -1,65 +1,41 @@
-# Deploy the LTX-Video worker to RunPod Serverless
+# ComfyUI-LTX serverless worker — deploy guide
 
-This worker generates AI video (text→video and image→video) and returns a URL the
-AlgoAI360 Worker already knows how to read. Deploying it makes "cloud video" real.
+Runs the GOOD fp8 13B LTX-Video the SAME way Bob runs it locally (ComfyUI), so cloud
+output = proven local output. Diffusers couldn't load the fp8 13B; ComfyUI loads it natively.
 
-## What you need
-- RunPod account with a funded balance (you have this)
-- A GitHub account (RunPod builds the worker from a git repo — easiest path)
-- ~15 min
+## Files
+- `Dockerfile` — worker-comfyui:5.8.6-base + `comfy-node-install comfyui-ltxvideo` (LTX nodes).
+- `workflow_t2v.json` — Bob's proven LTX-13B text-to-video graph (fp8 13B + fp8 T5, 30 steps,
+  cfg 3.2, tiled decode). `__PROMPT__` = injected by the CF Worker per request.
 
-## The plan
-1. Push this folder to a GitHub repo.
-2. RunPod builds a serverless endpoint from that repo.
-3. Copy the endpoint ID → paste into Cloudflare as `RUNPOD_VIDEO_ENDPOINT_ID`.
-4. Test: generate one real video. Only "done" when we SEE the video.
+## Deploy steps
+1. **GitHub repo** `algoai360-comfyui-ltx` (public) → push these files. RunPod builds from it.
+2. **Serverless → New endpoint** from that repo. Attach `algoai360-models` volume (60GB, EU-RO-1).
+   24GB GPU (RTX 3090/A5000/PRO4500 — fp8 13B fits via ComfyUI + tiled decode). Active 0 / Max 1.
+3. **Arrange models on the volume in ComfyUI's layout** (temp pod + notebook):
+   - `/workspace/models/checkpoints/ltxv-13b-0.9.7-dev-fp8.safetensors`  ← already downloaded (in hf cache; move/copy it here)
+   - `/workspace/models/text_encoders/t5xxl_fp8_e4m3fn.safetensors`  ← FETCH THIS (comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors)
+   - (VAE: LTX ckpt bundles its own VAE, so a separate vae file is likely NOT needed — verify)
+   Note: serverless mounts the volume at /runpod-volume, so ComfyUI sees /runpod-volume/models/...
+4. **Wire endpoint id** into CF: `echo <ID> | npx wrangler secret put RUNPOD_VIDEO_ENDPOINT_ID`.
+5. **CF Worker dispatch rewrite** (worker.js handleVideoGenerate): send
+   `{ "input": { "workflow": <workflow_t2v.json with __PROMPT__ replaced> } }`. Update status
+   poll to read the output image(s)/video from worker-comfyui's response shape.
 
----
+## ⚠️ OPEN ITEM — video output format
+Bob's graph ends in `SaveImage` = saves FRAMES (Bob assembles the mp4 itself afterward via
+ffmpeg/NVENC). worker-comfyui returns whatever SaveImage produces (frames as base64/S3). Two paths:
+  A) Add a video-combine node to the workflow (e.g. ComfyUI-VideoHelperSuite `VHS_VideoCombine`)
+     so ComfyUI outputs an mp4 directly → add `comfy-node-install comfyui-videohelpersuite` to the
+     Dockerfile. CLEANEST — one mp4 back.
+  B) Keep SaveImage (frames) and have the CF Worker / a tiny step assemble frames→mp4.
+RECOMMEND A: add VideoHelperSuite, swap `save` node to VHS_VideoCombine (fps=24, format=video/h264-mp4).
 
-## Step 1 — Put this folder in a GitHub repo
-The three files (`handler.py`, `requirements.txt`, `Dockerfile`) must be at the repo root
-(or note the subfolder path for step 2). Simplest: a new repo `algoai360-ltx-video` with
-just these three files.
+## Test
+Requests tab first: `{ "input": { "workflow": {<the graph, __PROMPT__ replaced with a real prompt>} } }`.
+Watch RunPod Logs for ComfyUI loading the ckpt + T5, sampling 30 steps, decode, save. Then the
+end-to-end `/api/video/generate`. Watch a video PLAY before calling it done.
 
-## Step 2 — Create the RunPod endpoint
-RunPod → **Serverless** → **+ New Endpoint** → **Import Git Repository** (or "Custom / Docker").
-- **Repo:** your `algoai360-ltx-video` repo. RunPod builds the Dockerfile automatically.
-- **GPU:** **24 GB (RTX 4090 / A5000 — NON-PRO, High Supply).** LTX-Video fits 24GB.
-  ⚠️ Do NOT pick a PRO/Blackwell/MIG card (the "no kernel image" CUDA error).
-- **Active workers: 0**  ·  **Max workers: 1**  ·  **Idle timeout: 5s**  ·  **FlashBoot: ON**
-- **Container disk:** 40 GB (room for the LTX weights + CUDA).
-- **Env vars** (Settings → add these so videos upload to R2 and return small URLs):
-  ```
-  R2_ACCOUNT_ID        = <your Cloudflare account id>
-  R2_ACCESS_KEY_ID     = <R2 API token access key>
-  R2_SECRET_ACCESS_KEY = <R2 API token secret>
-  R2_BUCKET            = <bucket for generated media, e.g. algoai360-media>
-  R2_PUBLIC_BASE       = https://media.algoai360.com   (the bucket's public URL)
-  ```
-  (If you skip R2 for a first test, the worker returns a base64 data-URI instead — big,
-  but it proves generation works. Set R2 before real customers use it.)
-- **Deploy.** First build takes several minutes (installs torch + diffusers).
-
-## Step 3 — Wire the endpoint ID into Cloudflare
-Copy the new endpoint's **ID**, then:
-Cloudflare → Workers & Pages → `algoai360-api` → Settings → Variables & Secrets →
-add secret `RUNPOD_VIDEO_ENDPOINT_ID = <the id>` → **Save and Deploy**.
-
-## Step 4 — Prove it (the real test — we do this together)
-From the app or a direct curl with a valid beta license key:
-```
-POST https://algoai360-api.nickmeet282.workers.dev/api/video/generate
-{ "license_key": "<beta key>", "prompt": "a golden retriever running on a beach", "duration": 4, "fps": 8 }
-```
-→ returns `{ ok, job_id }`. Then poll:
-```
-GET /api/video/status/<job_id>
-```
-→ eventually `{ status: "completed", url: "<video url>" }`. Open the url — **watch the video.**
-First run is a cold start (model downloads onto the worker) — can be a few minutes; after
-that it's fast. Watch the RunPod meter: it bills only while running, $0 idle.
-
-## If it fails
-The Worker auto-refunds the credits on any failed job (idempotent). Check the RunPod
-endpoint **Logs** tab — the handler prints the exact error (model load / generation /
-encode / upload). Paste that to Claude and we fix the handler.
+## Proven-good reference (Bob local)
+E:\Builder Bob\studios\video-studio\generate_video.py (the graph) + first_run_setup.py (model files).
+Model files: ltxv-13b-0.9.7-dev-fp8.safetensors + t5xxl_fp8_e4m3fn.safetensors + type "ltxv" CLIP.

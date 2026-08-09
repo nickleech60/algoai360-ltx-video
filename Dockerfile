@@ -1,33 +1,23 @@
-# AlgoAI360 — LTX-Video serverless worker
-# Base: CUDA 12.1 runtime on Ubuntu 22.04 (matches torch 2.5.1 cu121 wheels).
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+# AlgoAI360 — ComfyUI serverless worker for LTX-Video (the GOOD 13B, run the SAME way
+# Builder Bob runs it locally). Base = RunPod's official worker-comfyui (serverless
+# ComfyUI API). We ONLY add the LTX custom nodes here; the MODELS live on the network
+# volume (/runpod-volume/models/...), auto-detected — no model baking.
+#
+# Why ComfyUI (not diffusers): the fp8 13B checkpoint is a ComfyUI-format single file.
+# diffusers can't load it (shape mismatch); ComfyUI loads it natively — exactly like
+# Bob's proven local pipeline. Same model, same loader, same good output.
+FROM runpod/worker-comfyui:5.8.6-base
 
-# HF_HOME points at the RunPod volume/host-cache path so a downloaded model persists
-# and is reused by later workers (RunPod caches HF models on the host). Small image.
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    HF_HOME=/runpod-volume/hf \
-    PIP_NO_CACHE_DIR=1
+# Add the LTX-Video custom nodes (CheckpointLoaderSimple works for the ckpt, but the
+# LTX-specific nodes — EmptyLTXVLatentVideo, LTXVConditioning, LTXVAddGuide, the "ltxv"
+# CLIP type, VAEDecodeTiled temporal args — come from ComfyUI-LTXVideo).
+# LTX nodes (EmptyLTXVLatentVideo, LTXVConditioning, "ltxv" CLIP, etc.) AND
+# VideoHelperSuite (VHS_VideoCombine) so ComfyUI outputs a finished MP4 directly —
+# Bob assembles frames→mp4 himself locally, but in the cloud we want one mp4 back.
+RUN comfy-node-install comfyui-ltxvideo comfyui-videohelpersuite
 
-# Python + ffmpeg (imageio needs the ffmpeg binary for mp4 encoding).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip ffmpeg git && \
-    rm -rf /var/lib/apt/lists/* && \
-    ln -sf /usr/bin/python3 /usr/bin/python
-
-WORKDIR /app
-COPY requirements.txt .
-# Install torch from the cu121 index so the CUDA build matches the base image.
-RUN pip install --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements.txt
-
-# NOTE: We do NOT bake the model into the image — that makes the image so large that
-# RunPod's "export layers" step exceeds the 30-min build cap (learned the hard way).
-# Instead, keep the image SMALL (code + deps only) and cache the model on the HOST via
-# RunPod's "Cached model" field (set to huggingface.co/Lightricks/LTX-Video on the
-# endpoint) OR a network volume. The handler downloads on first cold start into
-# HF_HOME, and RunPod's host cache makes that fast on subsequent workers.
-
-COPY handler.py .
-
-# RunPod invokes the handler; no CMD web server needed for serverless.
-CMD ["python", "-u", "handler.py"]
+# Models are NOT baked — they sit on the network volume at:
+#   /runpod-volume/models/checkpoints/ltxv-13b-0.9.7-dev-fp8.safetensors
+#   /runpod-volume/models/text_encoders/t5xxl_fp8_e4m3fn.safetensors
+#   /runpod-volume/models/vae/  (LTX ckpt bundles its VAE, so this may be optional)
+# ComfyUI auto-detects them. Keeps the image small = fast build.
