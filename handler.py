@@ -38,36 +38,37 @@ def _load_pipes():
     global _PIPE, _PIPE_I2V
     if _PIPE is not None:
         return
-    # Use the 13B-DISTILLED model — it fixed the "headless dog" (the generic
-    # Lightricks/LTX-Video default gave incoherent output; local Bob runs a specific
-    # good checkpoint, so cloud must too). Distilled = better coherence AND only ~30
-    # steps (fast). License: FREE commercial use under $10M ARR (verified 2026-08-09).
-    model_id = os.environ.get("LTX_MODEL", "Lightricks/LTX-Video-0.9.8-13B-distilled")
+    # Use the FP8-quantized 13B — the SAME checkpoint Bob runs locally on a 24GB 3090
+    # (proven-good quality Nick has seen). fp8 is ~half the memory of bf16, so the 13B
+    # FITS 24GB (the bf16 13B OOM'd; the fp8 13B is what makes 24GB work — that's why
+    # local works). Load the fp8 transformer via from_single_file, plug into the base
+    # pipeline (VAE + T5 from the diffusers repo). License: free commercial <$10M ARR.
+    base_repo = os.environ.get("LTX_BASE", "Lightricks/LTX-Video")
+    ckpt = os.environ.get(
+        "LTX_CKPT",
+        "https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-dev-fp8.safetensors",
+    )
     have_cuda = torch.cuda.is_available()
     dtype = torch.bfloat16 if have_cuda else torch.float32
-    print(f"[ltx] loading {model_id} (cuda={have_cuda}) ...", flush=True)
-    # 0.9.7+ models use LTXConditionPipeline; older ones use LTXPipeline. Try the new
-    # one first, fall back for compatibility.
-    try:
-        from diffusers import LTXConditionPipeline
-        _PIPE = LTXConditionPipeline.from_pretrained(model_id, torch_dtype=dtype)
-        print("[ltx] loaded via LTXConditionPipeline", flush=True)
-    except Exception as _e:
-        print(f"[ltx] LTXConditionPipeline failed ({_e}); trying LTXPipeline", flush=True)
-        from diffusers import LTXPipeline
-        _PIPE = LTXPipeline.from_pretrained(model_id, torch_dtype=dtype)
-    from diffusers import LTXImageToVideoPipeline
+    print(f"[ltx] loading FP8 13B transformer from {ckpt} ...", flush=True)
+    from diffusers import LTXPipeline, LTXImageToVideoPipeline
+    from diffusers import LTXVideoTransformer3DModel
+    transformer = LTXVideoTransformer3DModel.from_single_file(ckpt, torch_dtype=dtype)
+    print(f"[ltx] transformer loaded; building pipeline from {base_repo} ...", flush=True)
+    _PIPE = LTXPipeline.from_pretrained(base_repo, transformer=transformer, torch_dtype=dtype)
     print("[ltx] weights loaded, placing on device ...", flush=True)
 
     if have_cuda:
-        # The 13B model is ~22GB in bf16 — putting it FULLY on a 24GB card
-        # (_PIPE.to("cuda")) leaves no room for generation → CUDA OOM (learned the
-        # hard way). ALWAYS use CPU offload for the 13B: only the active module sits
-        # on GPU, the rest lives in system RAM. Slower but it FITS 24GB.
-        _PIPE.enable_model_cpu_offload()
-        print("[ltx] CPU-offload mode (13B needs it to fit 24GB)", flush=True)
-        # VAE tiling/slicing keeps the decode step from spiking VRAM (the other OOM
-        # point). Cheap safety, negligible quality cost.
+        free, total = torch.cuda.mem_get_info()
+        free_gb = free / (1024**3)
+        # fp8 13B (~13GB) fits 24GB → full-GPU = FAST (like Nick's local). VAE tiling
+        # still on to keep the decode from spiking. Offload only if a small card.
+        if free_gb >= 16:
+            _PIPE.to("cuda")
+            print(f"[ltx] full-GPU mode ({free_gb:.0f}GB free) — fp8 13B fits", flush=True)
+        else:
+            _PIPE.enable_model_cpu_offload()
+            print(f"[ltx] CPU-offload ({free_gb:.0f}GB free)", flush=True)
         try:
             _PIPE.vae.enable_tiling()
             _PIPE.vae.enable_slicing()
@@ -173,6 +174,7 @@ def handler(event):
             num_frames=num_frames,
             # 30 steps: the DISTILLED 13B is designed for ~30 (not 50). Fewer steps =
             # much faster (fixes the 6-min problem) with no quality loss on distilled.
+            # 13B-dev (non-distilled) uses standard ~30 steps. Tunable via env.
             num_inference_steps=int(os.environ.get("LTX_STEPS", "30")),
             generator=gen,
         )
