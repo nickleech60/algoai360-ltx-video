@@ -26,6 +26,8 @@ import uuid
 import runpod
 import torch
 
+print("[ltx] handler process started — worker is up", flush=True)
+
 # ── Model load (once per cold start; stays warm via FlashBoot) ───────────────
 _PIPE = None
 _PIPE_I2V = None
@@ -38,12 +40,31 @@ def _load_pipes():
         return
     from diffusers import LTXPipeline, LTXImageToVideoPipeline
     model_id = os.environ.get("LTX_MODEL", "Lightricks/LTX-Video")
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    have_cuda = torch.cuda.is_available()
+    dtype = torch.bfloat16 if have_cuda else torch.float32
+    # Print loudly so RunPod Logs show progress (the old version was silent = looked hung).
+    print(f"[ltx] loading {model_id} (cuda={have_cuda}) ...", flush=True)
     _PIPE = LTXPipeline.from_pretrained(model_id, torch_dtype=dtype)
-    _PIPE.to("cuda" if torch.cuda.is_available() else "cpu")
+    print("[ltx] weights loaded, placing on device ...", flush=True)
+
+    if have_cuda:
+        free, total = torch.cuda.mem_get_info()
+        free_gb = free / (1024**3)
+        # LTX video generation can spike VRAM. On a 24GB card full-GPU is fine; if a
+        # worker somehow lands on a smaller card, fall back to CPU offload so it NEVER
+        # OOM-hangs (an OOM used to look like a silent stuck worker).
+        if free_gb >= 20:
+            _PIPE.to("cuda")
+            print(f"[ltx] full-GPU mode ({free_gb:.0f}GB free)", flush=True)
+        else:
+            _PIPE.enable_model_cpu_offload()
+            print(f"[ltx] CPU-offload mode (only {free_gb:.0f}GB free)", flush=True)
+    else:
+        _PIPE.to("cpu")
+
     # Image-to-video reuses the same underlying components (no second download).
     _PIPE_I2V = LTXImageToVideoPipeline(**_PIPE.components)
-    _PIPE_I2V.to("cuda" if torch.cuda.is_available() else "cpu")
+    print("[ltx] pipelines ready", flush=True)
 
 
 def _decode_image(img):
