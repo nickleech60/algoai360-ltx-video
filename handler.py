@@ -38,13 +38,25 @@ def _load_pipes():
     global _PIPE, _PIPE_I2V
     if _PIPE is not None:
         return
-    from diffusers import LTXPipeline, LTXImageToVideoPipeline
-    model_id = os.environ.get("LTX_MODEL", "Lightricks/LTX-Video")
+    # Use the 13B-DISTILLED model — it fixed the "headless dog" (the generic
+    # Lightricks/LTX-Video default gave incoherent output; local Bob runs a specific
+    # good checkpoint, so cloud must too). Distilled = better coherence AND only ~30
+    # steps (fast). License: FREE commercial use under $10M ARR (verified 2026-08-09).
+    model_id = os.environ.get("LTX_MODEL", "Lightricks/LTX-Video-0.9.8-13B-distilled")
     have_cuda = torch.cuda.is_available()
     dtype = torch.bfloat16 if have_cuda else torch.float32
-    # Print loudly so RunPod Logs show progress (the old version was silent = looked hung).
     print(f"[ltx] loading {model_id} (cuda={have_cuda}) ...", flush=True)
-    _PIPE = LTXPipeline.from_pretrained(model_id, torch_dtype=dtype)
+    # 0.9.7+ models use LTXConditionPipeline; older ones use LTXPipeline. Try the new
+    # one first, fall back for compatibility.
+    try:
+        from diffusers import LTXConditionPipeline
+        _PIPE = LTXConditionPipeline.from_pretrained(model_id, torch_dtype=dtype)
+        print("[ltx] loaded via LTXConditionPipeline", flush=True)
+    except Exception as _e:
+        print(f"[ltx] LTXConditionPipeline failed ({_e}); trying LTXPipeline", flush=True)
+        from diffusers import LTXPipeline
+        _PIPE = LTXPipeline.from_pretrained(model_id, torch_dtype=dtype)
+    from diffusers import LTXImageToVideoPipeline
     print("[ltx] weights loaded, placing on device ...", flush=True)
 
     if have_cuda:
@@ -133,12 +145,10 @@ def handler(event):
     if not prompt and not image_in:
         return {"error": "prompt or image required"}
 
-    # Prompt enhancement: LTX rewards long, cinematic, detailed prompts. A bare prompt
-    # ("a dog on a beach") yields flat output. Unless the caller already wrote a long
-    # one (or opts out with enhance:false), append cinematic quality cues.
-    if prompt and inp.get("enhance", True) and len(prompt) < 200:
-        prompt = (f"{prompt}, cinematic, highly detailed, sharp focus, natural lighting, "
-                  f"smooth realistic motion, professional color grading, 4k, high quality")
+    # Light prompt enhancement only for very short prompts. The 13B model follows
+    # prompts well on its own — over-stuffing (the old long suffix) can HURT coherence.
+    if prompt and inp.get("enhance", True) and len(prompt) < 80:
+        prompt = f"{prompt}, high quality, detailed, smooth natural motion, cinematic"
 
     # LTX generates in frames; num_frames must be 8k+1 for its temporal compression.
     num_frames = seconds * fps
@@ -164,8 +174,9 @@ def handler(event):
             negative_prompt=neg,
             width=width, height=height,
             num_frames=num_frames,
-            # 50 steps = sharper than 40 (diminishing returns past ~50).
-            num_inference_steps=int(os.environ.get("LTX_STEPS", "50")),
+            # 30 steps: the DISTILLED 13B is designed for ~30 (not 50). Fewer steps =
+            # much faster (fixes the 6-min problem) with no quality loss on distilled.
+            num_inference_steps=int(os.environ.get("LTX_STEPS", "30")),
             generator=gen,
         )
         img = _decode_image(image_in)
