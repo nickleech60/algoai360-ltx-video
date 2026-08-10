@@ -8,14 +8,15 @@
 # Bob's proven local pipeline. Same model, same loader, same good output.
 FROM runpod/worker-comfyui:5.8.6-base
 
-# Add the LTX-Video custom nodes (CheckpointLoaderSimple works for the ckpt, but the
-# LTX-specific nodes — EmptyLTXVLatentVideo, LTXVConditioning, LTXVAddGuide, the "ltxv"
-# CLIP type, VAEDecodeTiled temporal args — come from ComfyUI-LTXVideo).
-# LTX nodes (EmptyLTXVLatentVideo, LTXVConditioning, "ltxv" CLIP, etc.).
+# Add ONLY the LTX-Video custom nodes (EmptyLTXVLatentVideo, LTXVConditioning, the
+# "ltxv" CLIP type, VAEDecodeTiled temporal args — come from ComfyUI-LTXVideo).
 RUN comfy-node-install comfyui-ltxvideo
-# VideoHelperSuite (VHS_VideoCombine) so ComfyUI outputs a finished MP4 directly.
-# Separate RUN so one failing doesn't skip the other, and so we see which one errors.
-RUN comfy-node-install comfyui-videohelpersuite
+
+# NOTE: we deliberately do NOT install ComfyUI-VideoHelperSuite. Its VHS_VideoCombine
+# node fails to import in this serverless env (an OpenCV/cv2 import crash → ComfyUI then
+# reports "Node 'VHS_VideoCombine' not found"). Instead the workflow uses ComfyUI's
+# CORE built-in SaveWEBM node (VP9) to write the finished video — no custom node, no
+# import to crash. Browsers play WEBM natively, so it's fine for web delivery.
 
 # Models are NOT baked — they sit on the network volume at:
 #   /runpod-volume/models/checkpoints/ltxv-13b-0.9.7-dev-fp8.safetensors
